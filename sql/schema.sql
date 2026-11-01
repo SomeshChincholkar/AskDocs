@@ -5,9 +5,13 @@ CREATE TABLE IF NOT EXISTS users (
     is_anonymous boolean NOT NULL DEFAULT true,
     username text UNIQUE,
     password_hash text,
+    token_version integer NOT NULL DEFAULT 0,
     created_at timestamptz NOT NULL DEFAULT now(),
     last_seen_at timestamptz NOT NULL DEFAULT now()
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS users_username_lower_idx
+    ON users (lower(username)) WHERE username IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS sessions (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),

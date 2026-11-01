@@ -20,7 +20,15 @@
         <div class="eyebrow">YOUR DOCUMENT ASSISTANT</div>
         <h1 id="session-title">New chat</h1>
       </div>
-      <button class="icon-button" id="rename-chat" type="button" title="Rename chat" aria-label="Rename chat">✎</button>
+      <div class="account-panel">
+        <div class="account-copy">
+          <span class="account-username" id="account-username"></span>
+          <span class="account-hint" id="account-hint" hidden>Your chats are saved in this browser. Log in to keep them across devices.</span>
+        </div>
+        <button class="auth-open" id="auth-open" type="button">Log in / Sign up</button>
+        <button class="logout-button" id="logout" type="button" hidden>Log out</button>
+        <button class="icon-button" id="rename-chat" type="button" title="Rename chat" aria-label="Rename chat">✎</button>
+      </div>
     </header>
 
     <section class="documents-bar" aria-label="Uploaded documents">
@@ -56,4 +64,26 @@
 </div>
 <div class="drop-overlay" id="drop-overlay">Drop documents to add them to this chat</div>
 <div class="toast-region" id="toast-region" role="status" aria-live="polite"></div>
+<dialog class="auth-dialog" id="auth-dialog" aria-labelledby="auth-title">
+  <div class="auth-card">
+    <button class="auth-close" id="auth-close" type="button" aria-label="Close dialog">×</button>
+    <p class="eyebrow">YOUR ASKDOCS ACCOUNT</p>
+    <h2 id="auth-title">Welcome back</h2>
+    <div class="auth-tabs" role="tablist" aria-label="Account action">
+      <button class="auth-tab active" id="login-tab" type="button" role="tab" aria-selected="true">Log in</button>
+      <button class="auth-tab" id="register-tab" type="button" role="tab" aria-selected="false">Sign up</button>
+    </div>
+    <form id="auth-form">
+      <label for="auth-username">Username</label>
+      <input id="auth-username" name="username" type="text" minlength="3" maxlength="30" autocomplete="username" required>
+      <label for="auth-password">Password</label>
+      <div class="password-field">
+        <input id="auth-password" name="password" type="password" minlength="8" maxlength="128" autocomplete="current-password" required>
+        <button class="password-toggle" id="password-toggle" type="button">Show</button>
+      </div>
+      <p class="auth-error" id="auth-error" role="alert" hidden></p>
+      <button class="auth-submit" id="auth-submit" type="submit">Log in</button>
+    </form>
+  </div>
+</dialog>
 {% endblock %}

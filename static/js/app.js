@@ -1,7 +1,19 @@
 (() => {
   "use strict";
 
-  const state = { sessions: [], sessionId: null, documents: [], busy: false, dragDepth: 0 };
+  const TOKEN_KEY = "askdocs_token";
+  const EXPIRY_KEY = "askdocs_token_expires_at";
+  const ANONYMOUS_KEY = "askdocs_is_anonymous";
+  const USERNAME_KEY = "askdocs_username";
+  const STORAGE_KEYS = [TOKEN_KEY, EXPIRY_KEY, ANONYMOUS_KEY, USERNAME_KEY];
+  const state = {
+    sessions: [],
+    sessionId: null,
+    documents: [],
+    busy: false,
+    dragDepth: 0,
+    authMode: "login"
+  };
   const el = (id) => document.getElementById(id);
   const sessionList = el("session-list");
   const messages = el("messages");
@@ -11,24 +23,6 @@
   const fileInput = el("file-input");
   const dropOverlay = el("drop-overlay");
 
-  function escapeHtml(value) {
-    return String(value).replace(/[&<>"']/g, (char) => ({
-      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
-    })[char]);
-  }
-
-  function markdown(value) {
-    let safe = escapeHtml(value);
-    safe = safe.replace(/```([\s\S]*?)```/g, "<pre><code>$1</code></pre>");
-    safe = safe.replace(/`([^`]+)`/g, "<code>$1</code>");
-    safe = safe.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-    safe = safe.replace(/(^|\n)[-*] (.+)/g, "$1<li>$2</li>");
-    safe = safe.replace(/(<li>[\s\S]*?<\/li>)(?:\n<li>[\s\S]*?<\/li>)*/g, "<ul>$&</ul>");
-    return safe.split(/\n{2,}/).map((part) => part.startsWith("<ul>") || part.startsWith("<pre>")
-      ? part
-      : `<p>${part.replace(/\n/g, "<br>")}</p>`).join("");
-  }
-
   function toast(message, success = false) {
     const node = document.createElement("div");
     node.className = `toast${success ? " success" : ""}`;
@@ -37,30 +31,164 @@
     window.setTimeout(() => node.remove(), 4800);
   }
 
-  async function api(url, options = {}) {
-    const response = await fetch(url, {
-      credentials: "same-origin",
-      ...options,
-      headers: { ...(options.body instanceof FormData ? {} : { "Content-Type": "application/json" }), ...options.headers }
-    });
-    if (!response.ok) {
-      let detail = `Request failed (${response.status}).`;
-      try {
-        const body = await response.json();
-        detail = body.detail || detail;
-      } catch (_) { /* Keep the status-based message for non-JSON responses. */ }
-      if (response.status === 413) detail = "That file is too large. Try a smaller file.";
-      if (response.status === 415) detail = "That file type is not supported.";
-      if (response.status === 429) detail = "You’re sending requests too quickly. Please try again later.";
-      throw new Error(detail);
+  function clearAuth() {
+    for (const key of STORAGE_KEYS) localStorage.removeItem(key);
+  }
+
+  function storeAuth(result) {
+    localStorage.setItem(TOKEN_KEY, result.access_token);
+    localStorage.setItem(EXPIRY_KEY, result.expires_at);
+    localStorage.setItem(ANONYMOUS_KEY, String(result.user.is_anonymous));
+    if (result.user.username) localStorage.setItem(USERNAME_KEY, result.user.username);
+    else localStorage.removeItem(USERNAME_KEY);
+  }
+
+  function hasUsableToken() {
+    const token = localStorage.getItem(TOKEN_KEY);
+    const expiresAt = Date.parse(localStorage.getItem(EXPIRY_KEY) || "");
+    return Boolean(token && Number.isFinite(expiresAt) && expiresAt > Date.now());
+  }
+
+  function formatApiError(response, body) {
+    if (response.status === 413) return "That file is too large. Try a smaller file.";
+    if (response.status === 415) return "That file type is not supported.";
+    if (response.status === 429) return body.detail || "Too many attempts. Please try again later.";
+    if (Array.isArray(body.detail)) {
+      return body.detail.map((item) => item.msg).filter(Boolean).join(" ");
     }
-    if (response.status === 204) return null;
+    return body.detail || `Request failed (${response.status}).`;
+  }
+
+  async function apiFetch(url, options = {}, recoverAuth = true) {
+    const headers = new Headers(options.headers || {});
+    const token = localStorage.getItem(TOKEN_KEY);
+    if (token) headers.set("Authorization", `Bearer ${token}`);
+    if (options.body && !(options.body instanceof FormData) && !headers.has("Content-Type")) {
+      headers.set("Content-Type", "application/json");
+    }
+    const response = await fetch(url, {
+      ...options,
+      credentials: "omit",
+      headers
+    });
+
+    if (!response.ok) {
+      let body = {};
+      try {
+        body = await response.clone().json();
+      } catch (_) {
+        body = {};
+      }
+      if (
+        response.status === 401 &&
+        recoverAuth &&
+        ["token_invalid", "no_token"].includes(body.code)
+      ) {
+        const wasRegistered = localStorage.getItem(ANONYMOUS_KEY) === "false";
+        clearAuth();
+        if (wasRegistered) toast("Your session expired, please log in again");
+        await bootstrapAnonymous();
+        window.location.reload();
+        throw new Error("Session refreshed.");
+      }
+      throw new Error(formatApiError(response, body));
+    }
     return response;
   }
 
   async function json(url, options) {
-    const response = await api(url, options);
+    const response = await apiFetch(url, options);
+    if (response.status === 204) return null;
     return response.json();
+  }
+
+  async function bootstrapAnonymous() {
+    if (hasUsableToken()) return;
+    clearAuth();
+    const response = await apiFetch("/api/auth/anonymous", { method: "POST" }, false);
+    const created = await response.json();
+    if (hasUsableToken()) return;
+    storeAuth(created);
+  }
+
+  function updateAccountHeader() {
+    const isAnonymous = localStorage.getItem(ANONYMOUS_KEY) !== "false";
+    el("auth-open").hidden = !isAnonymous;
+    el("logout").hidden = isAnonymous;
+    el("account-hint").hidden = !isAnonymous;
+    el("account-username").textContent = isAnonymous
+      ? ""
+      : localStorage.getItem(USERNAME_KEY) || "Account";
+  }
+
+  function appendInlineText(parent, text) {
+    const pattern = /\*\*[^*]+\*\*|`[^`]+`/g;
+    let start = 0;
+    let match;
+    while ((match = pattern.exec(text)) !== null) {
+      if (match.index > start) {
+        parent.append(document.createTextNode(text.slice(start, match.index)));
+      }
+      const token = match[0];
+      const node = document.createElement(token.startsWith("**") ? "strong" : "code");
+      node.textContent = token.startsWith("**") ? token.slice(2, -2) : token.slice(1, -1);
+      parent.append(node);
+      start = pattern.lastIndex;
+    }
+    if (start < text.length) parent.append(document.createTextNode(text.slice(start)));
+  }
+
+  function createRichText(content) {
+    const fragment = document.createDocumentFragment();
+    const lines = String(content).split("\n");
+    let index = 0;
+    while (index < lines.length) {
+      if (!lines[index].trim()) {
+        index += 1;
+        continue;
+      }
+      if (lines[index].startsWith("```")) {
+        const codeLines = [];
+        index += 1;
+        while (index < lines.length && !lines[index].startsWith("```")) {
+          codeLines.push(lines[index]);
+          index += 1;
+        }
+        if (index < lines.length) index += 1;
+        const pre = document.createElement("pre");
+        const code = document.createElement("code");
+        code.textContent = codeLines.join("\n");
+        pre.append(code);
+        fragment.append(pre);
+        continue;
+      }
+      if (/^[-*] /.test(lines[index])) {
+        const list = document.createElement("ul");
+        while (index < lines.length && /^[-*] /.test(lines[index])) {
+          const item = document.createElement("li");
+          appendInlineText(item, lines[index].slice(2));
+          list.append(item);
+          index += 1;
+        }
+        fragment.append(list);
+        continue;
+      }
+      const paragraph = document.createElement("p");
+      let firstLine = true;
+      while (
+        index < lines.length &&
+        lines[index].trim() &&
+        !lines[index].startsWith("```") &&
+        !/^[-*] /.test(lines[index])
+      ) {
+        if (!firstLine) paragraph.append(document.createElement("br"));
+        appendInlineText(paragraph, lines[index]);
+        firstLine = false;
+        index += 1;
+      }
+      fragment.append(paragraph);
+    }
+    return fragment;
   }
 
   function updateComposer() {
@@ -114,6 +242,20 @@
     }
   }
 
+  function appendSources(body, sources) {
+    if (!sources.length) return;
+    const sourceList = document.createElement("div");
+    sourceList.className = "sources";
+    for (const source of sources) {
+      const chip = document.createElement("span");
+      chip.className = "source-chip";
+      chip.textContent = `${source.filename}, p.${source.page}`;
+      chip.title = source.snippet || "";
+      sourceList.append(chip);
+    }
+    body.append(sourceList);
+  }
+
   function addMessage(role, content, sources = []) {
     const row = document.createElement("article");
     row.className = `message ${role}`;
@@ -125,19 +267,8 @@
     }
     const body = document.createElement("div");
     body.className = "bubble";
-    body.innerHTML = markdown(content);
-    if (sources.length) {
-      const sourceList = document.createElement("div");
-      sourceList.className = "sources";
-      for (const source of sources) {
-        const chip = document.createElement("span");
-        chip.className = "source-chip";
-        chip.textContent = `${source.filename}, p.${source.page}`;
-        chip.title = source.snippet || "";
-        sourceList.append(chip);
-      }
-      body.append(sourceList);
-    }
+    body.append(createRichText(content));
+    appendSources(body, sources);
     row.append(body);
     messages.append(row);
     welcome.hidden = true;
@@ -225,6 +356,15 @@
     }
   }
 
+  async function loadMostRecentSession() {
+    state.sessionId = null;
+    state.documents = [];
+    messages.replaceChildren();
+    await refreshSessions();
+    if (state.sessions.length) await selectSession(state.sessions[0].id);
+    else await createSession();
+  }
+
   async function renameSession(session) {
     const title = window.prompt("Rename chat", session.title);
     if (title === null || !title.trim()) return;
@@ -243,15 +383,13 @@
   async function deleteSession(session) {
     if (!window.confirm(`Delete “${session.title}” and its documents?`)) return;
     try {
-      await api(`/api/sessions/${session.id}`, { method: "DELETE" });
+      await apiFetch(`/api/sessions/${session.id}`, { method: "DELETE" });
       if (state.sessionId === session.id) {
         state.sessionId = null;
         state.documents = [];
         messages.replaceChildren();
         welcome.hidden = false;
-        await refreshSessions();
-        if (state.sessions.length) await selectSession(state.sessions[0].id);
-        else await createSession();
+        await loadMostRecentSession();
       } else {
         await refreshSessions();
       }
@@ -262,7 +400,7 @@
 
   async function removeDocument(doc) {
     try {
-      await api(`/api/documents/${doc.id}`, { method: "DELETE" });
+      await apiFetch(`/api/documents/${doc.id}`, { method: "DELETE" });
       state.documents = state.documents.filter((item) => item.id !== doc.id);
       renderDocuments();
       toast("Document removed.", true);
@@ -328,25 +466,14 @@
       const payload = JSON.parse(data);
       if (eventName === "token") {
         answer += payload.text || "";
-        answerBody.innerHTML = markdown(answer);
+        answerBody.replaceChildren(createRichText(answer));
         el("conversation").scrollTop = el("conversation").scrollHeight;
       } else if (eventName === "sources") {
         sources = payload;
       } else if (eventName === "error") {
         throw new Error(payload.message || "The answer could not be generated.");
       } else if (eventName === "done") {
-        if (sources.length) {
-          const holder = document.createElement("div");
-          holder.className = "sources";
-          for (const source of sources) {
-            const chip = document.createElement("span");
-            chip.className = "source-chip";
-            chip.textContent = `${source.filename}, p.${source.page}`;
-            chip.title = source.snippet || "";
-            holder.append(chip);
-          }
-          answerBody.append(holder);
-        }
+        appendSources(answerBody, sources);
       }
     }
     while (true) {
@@ -366,11 +493,10 @@
     addMessage("user", text);
     const answerBody = addMessage("assistant", "");
     question.value = "";
-    question.style.height = "auto";
     state.busy = true;
     updateComposer();
     try {
-      const response = await api(`/api/sessions/${state.sessionId}/ask`, {
+      const response = await apiFetch(`/api/sessions/${state.sessionId}/ask`, {
         method: "POST",
         body: JSON.stringify({ question: text })
       });
@@ -388,6 +514,78 @@
     }
   }
 
+  function setAuthMode(mode) {
+    state.authMode = mode;
+    const isLogin = mode === "login";
+    el("login-tab").classList.toggle("active", isLogin);
+    el("register-tab").classList.toggle("active", !isLogin);
+    el("login-tab").setAttribute("aria-selected", String(isLogin));
+    el("register-tab").setAttribute("aria-selected", String(!isLogin));
+    el("auth-title").textContent = isLogin ? "Welcome back" : "Create your account";
+    el("auth-submit").textContent = isLogin ? "Log in" : "Create account";
+    el("auth-password").autocomplete = isLogin ? "current-password" : "new-password";
+    el("auth-error").hidden = true;
+    el("auth-error").textContent = "";
+  }
+
+  function openAuthDialog(mode = "login") {
+    setAuthMode(mode);
+    el("auth-dialog").showModal();
+    el("auth-username").focus();
+  }
+
+  async function submitAuth(event) {
+    event.preventDefault();
+    const submit = el("auth-submit");
+    const error = el("auth-error");
+    error.hidden = true;
+    submit.disabled = true;
+    submit.textContent = "Please wait…";
+    let result;
+    try {
+      result = await json(`/api/auth/${state.authMode}`, {
+        method: "POST",
+        body: JSON.stringify({
+          username: el("auth-username").value,
+          password: el("auth-password").value
+        })
+      });
+    } catch (requestError) {
+      error.textContent = requestError.message;
+      error.hidden = false;
+      submit.disabled = false;
+      submit.textContent = state.authMode === "login" ? "Log in" : "Create account";
+      return;
+    } finally {
+      if (!result) {
+        submit.disabled = false;
+        submit.textContent = state.authMode === "login" ? "Log in" : "Create account";
+      }
+    }
+    storeAuth(result);
+    el("auth-dialog").close();
+    updateAccountHeader();
+    try {
+      await loadMostRecentSession();
+    } catch (loadError) {
+      toast(`Signed in, but chats could not be loaded: ${loadError.message}`);
+    }
+    if (result.merged && result.merged.sessions > 0) {
+      toast(`Moved ${result.merged.sessions} previous chats to your account`, true);
+    }
+  }
+
+  async function logout() {
+    try {
+      await apiFetch("/api/auth/logout-all", { method: "POST" });
+    } catch (error) {
+      if (error.message === "Session refreshed.") return;
+      toast(`Could not invalidate other sessions: ${error.message}`);
+    }
+    clearAuth();
+    window.location.reload();
+  }
+
   el("new-chat").addEventListener("click", createSession);
   el("rename-chat").addEventListener("click", () => {
     const session = state.sessions.find((item) => item.id === state.sessionId);
@@ -397,11 +595,7 @@
   el("attach-button").addEventListener("click", () => fileInput.click());
   el("welcome-upload").addEventListener("click", () => fileInput.click());
   fileInput.addEventListener("change", () => uploadFiles([...fileInput.files]));
-  question.addEventListener("input", () => {
-    question.style.height = "auto";
-    question.style.height = `${Math.min(question.scrollHeight, 150)}px`;
-    updateComposer();
-  });
+  question.addEventListener("input", updateComposer);
   question.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
@@ -411,6 +605,25 @@
   el("composer").addEventListener("submit", (event) => {
     event.preventDefault();
     sendQuestion(question.value);
+  });
+  el("auth-open").addEventListener("click", () => openAuthDialog("login"));
+  el("logout").addEventListener("click", logout);
+  el("login-tab").addEventListener("click", () => setAuthMode("login"));
+  el("register-tab").addEventListener("click", () => setAuthMode("register"));
+  el("auth-close").addEventListener("click", () => el("auth-dialog").close());
+  el("auth-dialog").addEventListener("close", () => {
+    el("auth-password").value = "";
+    el("auth-password").type = "password";
+    el("password-toggle").textContent = "Show";
+  });
+  el("auth-form").addEventListener("submit", submitAuth);
+  el("password-toggle").addEventListener("click", () => {
+    const password = el("auth-password");
+    password.type = password.type === "password" ? "text" : "password";
+    el("password-toggle").textContent = password.type === "password" ? "Show" : "Hide";
+  });
+  el("auth-dialog").addEventListener("click", (event) => {
+    if (event.target === el("auth-dialog")) el("auth-dialog").close();
   });
 
   for (const eventName of ["dragenter", "dragover"]) {
@@ -436,10 +649,9 @@
 
   (async () => {
     try {
-      await json("/api/me");
-      await refreshSessions();
-      if (state.sessions.length) await selectSession(state.sessions[0].id);
-      else await createSession();
+      await bootstrapAnonymous();
+      updateAccountHeader();
+      await loadMostRecentSession();
     } catch (error) {
       toast(error.message);
     }

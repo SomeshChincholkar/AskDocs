@@ -66,3 +66,30 @@ class InMemoryUploadMiddleware:
             return await receive()
 
         await self.app(scope, replay_receive, send)
+
+
+class SecurityHeadersMiddleware:
+    """Set browser security headers on every application response."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        async def send_with_security_headers(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                headers = list(message.get("headers", []))
+                headers.extend(
+                    [
+                        (
+                            b"content-security-policy",
+                            b"default-src 'self'; script-src 'self'; style-src 'self'; "
+                            b"img-src 'self' data:; frame-ancestors 'none'",
+                        ),
+                        (b"x-content-type-options", b"nosniff"),
+                        (b"referrer-policy", b"same-origin"),
+                    ]
+                )
+                message["headers"] = headers
+            await send(message)
+
+        await self.app(scope, receive, send_with_security_headers)

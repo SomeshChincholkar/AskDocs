@@ -5,17 +5,19 @@ import time
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from typing import Annotated
-from uuid import UUID, uuid4
+from uuid import UUID
 
-from fastapi import Depends, HTTPException, Request, Response, status
+from fastapi import Depends, HTTPException, Request, status
 from psycopg_pool import AsyncConnectionPool
 
 from app.config import Settings
+from app.services.auth import AuthError, get_user_from_token
 
 
 @dataclass(frozen=True)
 class CurrentUser:
     id: UUID
+    username: str | None
     is_anonymous: bool
 
 
@@ -76,61 +78,48 @@ def client_ip(request: Request) -> str:
 
 async def get_current_user(
     request: Request,
-    response: Response,
     pool: Annotated[AsyncConnectionPool, Depends(get_pool)],
     settings: Annotated[Settings, Depends(get_app_settings)],
 ) -> CurrentUser:
-    """Resolve the anonymous cookie or create an anonymous user."""
-    raw_id = request.cookies.get(settings.cookie_name)
-    user_id: UUID | None = None
-    if raw_id:
-        try:
-            user_id = UUID(raw_id)
-        except ValueError:
-            user_id = None
-
+    """Resolve the user exclusively from a valid bearer JWT."""
+    authorization = request.headers.get("authorization")
+    if not authorization:
+        raise AuthError("Not authenticated", "no_token")
+    scheme, separator, token = authorization.partition(" ")
+    if not separator or scheme.lower() != "bearer" or not token.strip():
+        raise AuthError("Session expired", "token_invalid")
+    authenticated = await get_user_from_token(pool, settings, token.strip())
+    if authenticated is None:
+        raise AuthError("Session expired", "token_invalid")
     async with pool.connection() as connection:
-        if user_id is not None:
-            row = await (
-                await connection.execute(
-                    "SELECT id, is_anonymous FROM users WHERE id = %s",
-                    (user_id,),
-                )
-            ).fetchone()
-        else:
-            row = None
-
-        if row is None:
-            user_id = uuid4()
-            await connection.execute(
-                "INSERT INTO users (id, is_anonymous) VALUES (%s, true)",
-                (user_id,),
-            )
-            response.set_cookie(
-                key=settings.cookie_name,
-                value=str(user_id),
-                max_age=60 * 60 * 24 * 365,
-                httponly=True,
-                samesite="lax",
-                secure=settings.secure_cookies,
-                path="/",
-            )
-            return CurrentUser(id=user_id, is_anonymous=True)
-
         await connection.execute(
             "UPDATE users SET last_seen_at = now() "
             "WHERE id = %s AND last_seen_at < now() - interval '5 minutes'",
-            (user_id,),
+            (authenticated.id,),
         )
-    return CurrentUser(id=row["id"], is_anonymous=row["is_anonymous"])
+    return CurrentUser(
+        id=authenticated.id,
+        username=authenticated.username,
+        is_anonymous=authenticated.is_anonymous,
+    )
 
 
-def enforce_rate_limit(request: Request, action: str, limit: int) -> None:
-    """Raise HTTP 429 when an IP exceeds an action's hourly limit."""
-    key = f"{client_ip(request)}:{action}"
-    if not rate_limiter.allow(key, limit):
+def enforce_rate_limit(
+    request: Request,
+    action: str,
+    limit: int,
+    window_seconds: int = 3600,
+    subject: str | None = None,
+) -> None:
+    """Raise HTTP 429 when an IP or named subject exceeds an action's limit."""
+    key = (
+        f"{action}:{subject}"
+        if subject is not None
+        else f"{client_ip(request)}:{action}"
+    )
+    if not rate_limiter.allow(key, limit, window_seconds):
         label = action[:-1] if action.endswith("s") else action
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=f"Too many {label} requests. Please try again later.",
+            detail=f"Too many {label} attempts. Please try again later.",
         )

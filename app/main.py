@@ -14,8 +14,9 @@ from starlette.formparsers import MultiPartParser
 
 from app.config import Settings, get_settings
 from app.deps import CurrentUser, get_current_user
-from app.middleware import InMemoryUploadMiddleware
-from app.routers import chat, documents, pages, sessions
+from app.middleware import InMemoryUploadMiddleware, SecurityHeadersMiddleware
+from app.routers import auth, chat, documents, pages, sessions
+from app.services.auth import AuthError
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -49,6 +50,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     MultiPartParser.spool_max_size = upload_body_limit + 1
     application.add_middleware(InMemoryUploadMiddleware, settings=app_settings)
+    application.add_middleware(SecurityHeadersMiddleware)
     application.state.pool = None
     application.state.settings = app_settings
     application.state.templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
@@ -58,6 +60,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         name="static",
     )
     application.include_router(pages.router)
+    application.include_router(auth.router)
     application.include_router(sessions.router)
     application.include_router(documents.router)
     application.include_router(chat.router)
@@ -86,6 +89,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         user: CurrentUser = Depends(get_current_user),
     ) -> dict[str, object]:
         return {"user_id": user.id, "is_anonymous": user.is_anonymous}
+
+    @application.exception_handler(AuthError)
+    async def authentication_error_handler(
+        _request: Request,
+        error: AuthError,
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=error.status_code,
+            content={"detail": error.detail, "code": error.code},
+        )
 
     @application.exception_handler(Exception)
     async def unexpected_error_handler(request: Request, error: Exception) -> JSONResponse:

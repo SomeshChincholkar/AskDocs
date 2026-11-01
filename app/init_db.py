@@ -1,4 +1,4 @@
-"""Apply sql/schema.sql to the configured PostgreSQL database."""
+"""Apply the base schema and idempotent SQL migrations."""
 
 import asyncio
 import logging
@@ -18,12 +18,14 @@ async def main() -> None:
         raise RuntimeError("DATABASE_URL must be set before initializing the database.")
     await pool.open()
     try:
-        schema = Path(__file__).resolve().parent.parent / "sql" / "schema.sql"
+        sql_dir = Path(__file__).resolve().parent.parent / "sql"
+        scripts = [sql_dir / "schema.sql", *sorted((sql_dir / "migrations").glob("*.sql"))]
         async with pool.connection() as connection:
-            for statement in schema.read_text(encoding="utf-8").split(";"):
-                if statement.strip():
-                    await connection.execute(statement)
-        logger.info("Database schema initialized.")
+            for script in scripts:
+                for statement in script.read_text(encoding="utf-8").split(";"):
+                    if statement.strip():
+                        await connection.execute(statement)
+                logger.info("Applied database script %s.", script.name)
     finally:
         await pool.close()
 
