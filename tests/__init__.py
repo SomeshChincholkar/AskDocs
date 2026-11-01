@@ -1,1 +1,0 @@
-"""AskDocs test suite."""
