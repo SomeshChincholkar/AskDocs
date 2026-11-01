@@ -1,0 +1,1 @@
+"""AskDocs application package."""

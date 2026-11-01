@@ -1,0 +1,2 @@
+python -m app.init_db
+uvicorn app.main:app --reload

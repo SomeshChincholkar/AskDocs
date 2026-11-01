@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+
+{% block body %}
+<div class="app-shell">
+  <aside class="sidebar" id="sidebar">
+    <div class="brand"><img class="brand-logo" src="{{ url_for('static', path='/images/askdocs-logo.svg') }}" alt=""><span>AskDocs</span></div>
+    <button class="new-chat" id="new-chat" type="button"><span aria-hidden="true">＋</span> New chat</button>
+    <div class="sidebar-label">YOUR CHATS</div>
+    <nav class="session-list" id="session-list" aria-label="Your chats"></nav>
+    <div class="sidebar-footer">
+      <span class="privacy-mark" aria-hidden="true">◈</span>
+      <span>Your files are processed privately<br>and never stored.</span>
+    </div>
+  </aside>
+
+  <main class="main-panel">
+    <header class="topbar">
+      <button class="mobile-menu" id="mobile-menu" type="button" aria-label="Toggle chat list">☰</button>
+      <div>
+        <div class="eyebrow">YOUR DOCUMENT ASSISTANT</div>
+        <h1 id="session-title">New chat</h1>
+      </div>
+      <button class="icon-button" id="rename-chat" type="button" title="Rename chat" aria-label="Rename chat">✎</button>
+    </header>
+
+    <section class="documents-bar" aria-label="Uploaded documents">
+      <div class="documents-heading">
+        <span class="eyebrow">SOURCES</span>
+        <span class="file-count" id="file-count">0 files</span>
+      </div>
+      <div class="document-list" id="document-list"></div>
+    </section>
+
+    <section class="conversation" id="conversation" aria-live="polite">
+      <div class="welcome" id="welcome">
+        <div class="welcome-icon">✦</div>
+        <p class="eyebrow">A BETTER WAY TO FIND ANSWERS</p>
+        <h2>Bring your documents<br>into the conversation.</h2>
+        <p>Upload a file, then ask a question. Answers are grounded in your sources and cited for you.</p>
+        <button class="welcome-upload" id="welcome-upload" type="button">＋ <span>Add your first document</span></button>
+      </div>
+      <div class="messages" id="messages"></div>
+    </section>
+
+    <footer class="composer-wrap">
+      <div class="composer-hint" id="composer-hint">Add a document to start asking questions.</div>
+      <form class="composer" id="composer">
+        <input id="file-input" type="file" multiple accept=".pdf,.docx,.xlsx,.xls,.csv,.txt,.png,.jpg,.jpeg,.webp" hidden>
+        <button class="attach-button" id="attach-button" type="button" aria-label="Attach documents" title="Attach documents">＋</button>
+        <textarea id="question" rows="1" placeholder="Ask a question about your documents…" aria-label="Your question"></textarea>
+        <button class="send-button" id="send-button" type="submit" aria-label="Send question" disabled>↑</button>
+      </form>
+      <p class="disclaimer">AskDocs can make mistakes. Check the cited passages in your documents.</p>
+    </footer>
+  </main>
+</div>
+<div class="drop-overlay" id="drop-overlay">Drop documents to add them to this chat</div>
+<div class="toast-region" id="toast-region" role="status" aria-live="polite"></div>
+{% endblock %}
